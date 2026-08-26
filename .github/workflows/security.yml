@@ -48,6 +48,16 @@ jobs:
       - name: Install project and development dependencies
         run: python -m pip install -e ".[dev]"
 
+      - name: Verify FastAPI TestClient dependency
+        run: |
+          python - <<'PY'
+          import httpx2  # required by starlette.testclient (Starlette 1.6+)
+          from fastapi.testclient import TestClient
+
+          print(f"httpx2={httpx2.__version__}")
+          print(f"TestClient={TestClient!r}")
+          PY
+
       - name: Full pytest suite
         run: python -m pytest
 
