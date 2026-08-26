@@ -67,7 +67,8 @@ uploads/
 _live_*.py
 
 # LLM / RAG / local model artifacts (not used by this repo's committed sources)
-models/
+# Root-only: do not ignore src/grc_agent/models/ (domain package).
+/models/
 *.gguf
 .chroma/
 .lancedb/
