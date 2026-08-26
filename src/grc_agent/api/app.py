@@ -11,7 +11,7 @@ from grc_agent.agents.factory import create_risk_agent
 from grc_agent.api.middleware import CorrelationIdMiddleware
 from grc_agent.api.routes import router
 from grc_agent.api.service import AssessmentNotFoundError
-from grc_agent.config import Settings, get_settings
+from grc_agent.config import Settings, assert_auth_configuration, get_settings
 from grc_agent.db.session import create_db_engine, init_db, make_session_factory
 from grc_agent.engine.risk_engine import RiskEngine
 from grc_agent.llm.errors import OllamaResponseError, OllamaUnavailableError
@@ -31,6 +31,7 @@ def create_app(
     ``rag_embedder`` and ``knowledge_dir`` are for tests; production omits them.
     """
     resolved = settings or get_settings()
+    assert_auth_configuration(resolved)
     engine = init_db(create_db_engine(resolved.database_url))
     session_factory = make_session_factory(engine)
 

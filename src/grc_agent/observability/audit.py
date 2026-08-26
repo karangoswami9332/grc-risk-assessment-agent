@@ -17,6 +17,10 @@ from grc_agent.observability.context import ensure_correlation_id
 AUDIT_LOGGER_NAME = "grc_agent.observability.audit"
 logger = logging.getLogger(AUDIT_LOGGER_NAME)
 
+AUTHENTICATION_FAILED = "authentication_failed"
+AUTHENTICATION_SUCCEEDED = "authentication_succeeded"
+AUTHORIZATION_DENIED = "authorization_denied"
+
 # Event names (stable for tests and operators).
 ASSESSMENT_STARTED = "assessment_started"
 RAG_RETRIEVAL_COMPLETED = "rag_retrieval_completed"
@@ -26,6 +30,31 @@ INVALID_CONTROL_ID_REJECTED = "invalid_control_id_rejected"
 RISK_SCORED = "risk_scored"
 ASSESSMENT_COMPLETED = "assessment_completed"
 ASSESSMENT_FAILED = "assessment_failed"
+
+# Never persist these keys even if a caller accidentally passes them.
+_SENSITIVE_AUDIT_KEYS = frozenset(
+    {
+        "authorization",
+        "authorization_header",
+        "access_token",
+        "refresh_token",
+        "bearer",
+        "token",
+        "jwt",
+        "password",
+        "secret",
+        "api_key",
+        "apikey",
+        "private_key",
+        "jwt_secret",
+        "jwt_public_key",
+        "cookie",
+        "cookies",
+        "session",
+        "claims",
+        "payload",
+    }
+)
 
 
 def scenario_fingerprint(scenario: str) -> str:
@@ -43,6 +72,8 @@ def emit_audit_event(event: str, **fields: Any) -> dict[str, Any]:
     }
     for key, value in fields.items():
         if value is None:
+            continue
+        if key.lower() in _SENSITIVE_AUDIT_KEYS:
             continue
         payload[key] = value
     logger.info("%s", json.dumps(payload, sort_keys=True, default=str))

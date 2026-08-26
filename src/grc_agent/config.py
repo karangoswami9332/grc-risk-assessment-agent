@@ -15,6 +15,15 @@ DEFAULT_OLLAMA_EMBED_MODEL = "nomic-embed-text"
 DEFAULT_OLLAMA_TIMEOUT_SECONDS = 180
 DEFAULT_RAG_ENABLED = False
 DEFAULT_RAG_DEBUG = False
+DEFAULT_APP_ENV = "development"
+DEFAULT_AUTH_ENABLED = False
+DEFAULT_JWT_ALGORITHM = "HS256"
+DEFAULT_JWT_ISSUER = ""
+DEFAULT_JWT_AUDIENCE = ""
+# Empty placeholders only — never commit real secrets. Values come from the environment.
+DEFAULT_JWT_SECRET = ""  # nosec B105
+DEFAULT_JWT_PUBLIC_KEY = ""
+VALID_APP_ENVS = frozenset({"development", "test", "production"})
 _TRUE_VALUES = frozenset({"1", "true", "yes", "on"})
 _FALSE_VALUES = frozenset({"0", "false", "no", "off"})
 
@@ -45,6 +54,49 @@ class Settings:
     ollama_timeout_seconds: float = DEFAULT_OLLAMA_TIMEOUT_SECONDS
     rag_enabled: bool = DEFAULT_RAG_ENABLED
     rag_debug: bool = DEFAULT_RAG_DEBUG
+    app_env: str = DEFAULT_APP_ENV
+    auth_enabled: bool = DEFAULT_AUTH_ENABLED
+    jwt_algorithm: str = DEFAULT_JWT_ALGORITHM
+    jwt_issuer: str = DEFAULT_JWT_ISSUER
+    jwt_audience: str = DEFAULT_JWT_AUDIENCE
+    jwt_secret: str = DEFAULT_JWT_SECRET
+    jwt_public_key: str = DEFAULT_JWT_PUBLIC_KEY
+
+
+def assert_auth_configuration(settings: Settings) -> None:
+    """Fail closed for unsafe auth settings (used by get_settings and create_app).
+
+    Production cannot run unauthenticated and must have issuer/audience configured.
+    When auth is enabled (any environment), required key material must be present.
+    """
+    algorithm = (settings.jwt_algorithm or "").strip()
+    if not algorithm or algorithm.lower() == "none":
+        raise ValueError("JWT_ALGORITHM must not be 'none'")
+
+    if settings.app_env == "production" and not settings.auth_enabled:
+        raise ValueError(
+            "AUTH_ENABLED must be true when GRC_APP_ENV=production "
+            "(unauthenticated production mode is not allowed)"
+        )
+
+    if settings.auth_enabled:
+        algo = algorithm.upper()
+        if algo.startswith("HS") and not (settings.jwt_secret or "").strip():
+            raise ValueError(
+                "JWT_SECRET is required when AUTH_ENABLED=true and using HS* algorithms"
+            )
+        if (algo.startswith("RS") or algo.startswith("ES")) and not (
+            settings.jwt_public_key or ""
+        ).strip():
+            raise ValueError(
+                "JWT_PUBLIC_KEY is required when AUTH_ENABLED=true and using RS*/ES* algorithms"
+            )
+
+    if settings.app_env == "production":
+        if not (settings.jwt_issuer or "").strip() or not (settings.jwt_audience or "").strip():
+            raise ValueError(
+                "JWT_ISSUER and JWT_AUDIENCE are required when GRC_APP_ENV=production"
+            )
 
 
 def get_settings() -> Settings:
@@ -77,7 +129,39 @@ def get_settings() -> Settings:
         os.environ.get("GRC_RAG_DEBUG"),
         default=DEFAULT_RAG_DEBUG,
     )
-    return Settings(
+    app_env = (os.environ.get("GRC_APP_ENV", DEFAULT_APP_ENV).strip().lower() or DEFAULT_APP_ENV)
+    if app_env not in VALID_APP_ENVS:
+        raise ValueError(
+            f"Unknown GRC_APP_ENV={app_env!r}; use development, test, or production"
+        )
+
+    auth_raw = os.environ.get("AUTH_ENABLED")
+    if app_env == "production":
+        # Production must not silently fail open when AUTH_ENABLED is omitted.
+        if auth_raw is None or not str(auth_raw).strip():
+            raise ValueError(
+                "AUTH_ENABLED must be explicitly set to true when GRC_APP_ENV=production"
+            )
+        auth_enabled = parse_bool_env("AUTH_ENABLED", auth_raw, default=False)
+        if not auth_enabled:
+            raise ValueError(
+                "AUTH_ENABLED=false is not allowed when GRC_APP_ENV=production"
+            )
+    else:
+        auth_enabled = parse_bool_env(
+            "AUTH_ENABLED",
+            auth_raw,
+            default=DEFAULT_AUTH_ENABLED,
+        )
+
+    jwt_algorithm = (
+        os.environ.get("JWT_ALGORITHM", DEFAULT_JWT_ALGORITHM).strip() or DEFAULT_JWT_ALGORITHM
+    )
+    jwt_issuer = os.environ.get("JWT_ISSUER", DEFAULT_JWT_ISSUER).strip()
+    jwt_audience = os.environ.get("JWT_AUDIENCE", DEFAULT_JWT_AUDIENCE).strip()
+    jwt_secret = os.environ.get("JWT_SECRET", DEFAULT_JWT_SECRET)
+    jwt_public_key = os.environ.get("JWT_PUBLIC_KEY", DEFAULT_JWT_PUBLIC_KEY)
+    settings = Settings(
         database_url=url or DEFAULT_DATABASE_URL,
         risk_agent=agent,
         ollama_host=host,
@@ -86,4 +170,13 @@ def get_settings() -> Settings:
         ollama_timeout_seconds=timeout,
         rag_enabled=rag_enabled,
         rag_debug=rag_debug,
+        app_env=app_env,
+        auth_enabled=auth_enabled,
+        jwt_algorithm=jwt_algorithm,
+        jwt_issuer=jwt_issuer,
+        jwt_audience=jwt_audience,
+        jwt_secret=jwt_secret,
+        jwt_public_key=jwt_public_key,
     )
+    assert_auth_configuration(settings)
+    return settings

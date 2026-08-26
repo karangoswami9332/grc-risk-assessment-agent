@@ -139,6 +139,7 @@ class AssessmentSummary(_ApiModel):
     id: str
     title: str
     scenario: str
+    tenant_id: str = "local"
 
 
 class AssessmentRead(_ApiModel):
@@ -146,6 +147,8 @@ class AssessmentRead(_ApiModel):
     title: str
     scenario: str
     environment_notes: str
+    tenant_id: str = "local"
+    owner_subject: str = "local"
     assets: list[AssetRead]
     threats: list[ThreatRead]
     vulnerabilities: list[VulnerabilityRead]

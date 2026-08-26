@@ -65,6 +65,7 @@ Package layout (`src/grc_agent/`):
 | `rag/` | Chunking, embeddings, in-memory store, retrieval |
 | `controls/` | Catalog load + control ID validation |
 | `observability/` | Correlation IDs, structured security/audit logs, in-process counters |
+| `auth/` | JWT authentication, roles, tenant-aware authorization dependencies |
 | `llm/` | Local Ollama HTTP client |
 | `db/` | SQLite / SQLAlchemy persistence for CRUD assessments |
 | `models/` | Domain enums and entities |
@@ -211,8 +212,66 @@ Use **Try it out** on `POST /risk-assessments` to exercise the orchestrator.
 | `OLLAMA_TIMEOUT_SECONDS` | `180` | Chat HTTP timeout |
 | `GRC_RAG_ENABLED` | `false` | Enable RAG ingest/retrieve (requires `ollama`) |
 | `GRC_RAG_DEBUG` | `false` | Print/log retrieved context before propose |
+| `GRC_APP_ENV` | `development` | `development`, `test`, or `production` |
+| `AUTH_ENABLED` | `false` | Require Bearer JWT when `true`. **Required `true` in production** |
+| `JWT_ALGORITHM` | `HS256` | Signing algorithm (`HS*` needs `JWT_SECRET`; `RS*`/`ES*` need `JWT_PUBLIC_KEY`) |
+| `JWT_ISSUER` | _(empty)_ | Optional `iss` claim; verified when set (**required in production**) |
+| `JWT_AUDIENCE` | _(empty)_ | Optional `aud` claim; verified when set (**required in production**) |
+| `JWT_SECRET` | _(empty)_ | HMAC secret for local/test HS256 — **never commit real values** |
+| `JWT_PUBLIC_KEY` | _(empty)_ | PEM public key for RS256/ES256 (OIDC-style verification) |
 
 Copy [`.env.example`](.env.example) to `.env` for local overrides. **Do not commit `.env`.**
+
+## Authentication and authorization
+
+Local/test JWT authentication with an architecture that can later integrate with an enterprise OIDC provider. This is **not** a full identity provider (no login UI, user directory, refresh tokens, or managed JWKS fetch).
+
+### Authentication model
+
+- When `GRC_APP_ENV` is `development` or `test` and `AUTH_ENABLED=false` (default), routes use a local admin principal so offline tests and local mock usage keep working without tokens.
+- When `AUTH_ENABLED=true`, callers must send `Authorization: Bearer <JWT>`.
+- When `GRC_APP_ENV=production`, the process **refuses to start** unless `AUTH_ENABLED` is explicitly `true` (fail closed). Production also requires `JWT_ISSUER` and `JWT_AUDIENCE`.
+- Tokens are validated for structure, signature, expiry, and configured issuer/audience. The allowed algorithm comes **only** from configuration (header `alg` must match; `alg=none` is rejected). Symmetric and asymmetric key material are never mixed.
+- Failures return **HTTP 401** with a generic body. Tokens are never logged or echoed in errors.
+
+Expected JWT claims (minimum): `sub`, `role` (`admin` | `assessor` | `viewer`), `tenant_id` (or `tid`), `exp`, `iat`.
+
+### Authorization model
+
+| Endpoint class | admin | assessor | viewer |
+| --- | --- | --- | --- |
+| `POST /assessments` and nested writes (`/assets`, `/threats`, …) | allowed | allowed | **403** |
+| `GET /assessments`, `GET /assessments/{id}`, `GET .../risks` | allowed | allowed* | allowed* |
+| `POST /risk-assessments` | allowed | allowed | **403** |
+
+\*Non-admin reads/writes are **tenant-scoped**. Cross-tenant access returns **404** (not 403) to limit resource enumeration. Admins may list/read across tenants.
+
+Persisted assessments store `tenant_id` and `owner_subject` from the authenticated principal only. Clients cannot set these via request bodies (`extra=forbid` on create schemas).
+
+### Database ownership columns
+
+Fresh databases get `tenant_id` and `owner_subject` via SQLAlchemy `create_all`. Existing pre-auth SQLite databases are upgraded with a **non-destructive** `ALTER TABLE ... ADD COLUMN` (defaults `'local'` for existing rows). No data is deleted.
+
+### Local development with auth enabled
+
+```bash
+# Windows PowerShell
+$env:GRC_APP_ENV="development"
+$env:AUTH_ENABLED="true"
+$env:JWT_ALGORITHM="HS256"
+$env:JWT_ISSUER="grc-agent-local"
+$env:JWT_AUDIENCE="grc-agent-api"
+$env:JWT_SECRET="replace-with-a-long-random-local-secret"
+uvicorn grc_agent.api.app:create_app --factory --reload
+```
+
+Mint a short-lived HS256 JWT with the same issuer/audience/secret for manual `curl`/Swagger calls. Prefer regenerating secrets locally; never commit them.
+
+Security tests:
+
+```bash
+pytest tests/security -v --tb=short
+```
 
 ## How to run locally
 
@@ -278,7 +337,7 @@ Most tests use `MockRiskAgent` and/or a fake embedder. A small number of optiona
 
 ## Testing
 
-The suite currently includes **304** tests covering:
+The suite currently includes **341** tests covering:
 
 - RiskEngine matrix and scale validation
 - Orchestrator scoring ownership
@@ -286,7 +345,7 @@ The suite currently includes **304** tests covering:
 - RAG chunking, ingest, retrieval wiring, and `top_k` defaults
 - Control catalog parsing and mapping validation rules
 - FastAPI CRUD and `POST /risk-assessments` behavior
-- Offline security abuse cases and observability/audit checks (`tests/security/`, currently **91** tests)
+- Offline security abuse cases, authn/authz/tenant isolation, schema migration, fail-safe production auth, and observability/audit checks (`tests/security/`, currently **128** tests)
 
 ```bash
 pytest
@@ -400,7 +459,8 @@ Names and control metadata come from the catalog parser. The API response `mappe
 - **Secrets must not be committed.** Use `.env` locally; only `.env.example` (non-secret names/values) belongs in Git. This project does not require cloud API keys for its default local path.
 - **Risk scoring is deterministic after the LLM proposal.** Changing the model should not silently redefine the 5×5 matrix.
 - **RAG context is advisory**, not authoritative. Retrieval improves prompting; validation and the RiskEngine still own compliance-critical outputs.
-- **Lightweight security observability** emits structured audit events (correlation / `X-Request-ID`, RAG/LLM/mapping/scoring metadata) without logging secrets, full prompts, full LLM responses, or full scenario text. In-process counters track assessments, RAG retrievals, and rejected control IDs. This is not a full observability stack (no OpenTelemetry/Prometheus/Grafana).
+- **Lightweight security observability** emits structured audit events (correlation / `X-Request-ID`, RAG/LLM/mapping/scoring metadata) without logging secrets, full prompts, full LLM responses, or full scenario text. Auth events include `authentication_failed`, `authentication_succeeded`, and `authorization_denied` (metadata only — no tokens). In-process counters track assessments, RAG retrievals, and rejected control IDs. This is not a full observability stack (no OpenTelemetry/Prometheus/Grafana).
+- **API authz** uses role + tenant boundaries when `AUTH_ENABLED=true`. Development/test may set `AUTH_ENABLED=false`. `GRC_APP_ENV=production` refuses to start unauthenticated.
 
 ## Limitations / Future work
 
@@ -413,7 +473,7 @@ Names and control metadata come from the catalog parser. The API response `mappe
 - Automated remediation / ticket creation
 - Production-grade observability backends (distributed tracing, Prometheus/Grafana, log shipping)
 - Multi-framework mapping UI (ISO 27001 / NIST CSF / CIS as first-class products)
-- Authentication / multi-tenant authorization for the API
+- Full OIDC identity provider integration (login UI, JWKS polling, refresh tokens)
 - Persistent vector database (current store is in-process memory)
 - Web dashboard / report PDF generation
 

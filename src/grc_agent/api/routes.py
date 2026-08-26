@@ -25,6 +25,8 @@ from grc_agent.api.schemas import (
     VulnerabilityRead,
 )
 from grc_agent.api.service import AssessmentService
+from grc_agent.auth.dependencies import require_reader, require_risk_assessor, require_writer
+from grc_agent.auth.models import Principal
 from grc_agent.engine.risk_engine import RiskEngine
 from grc_agent.orchestrator import RiskOrchestrator
 
@@ -42,21 +44,26 @@ def get_service(
 def create_assessment(
     payload: AssessmentCreate,
     service: AssessmentService = Depends(get_service),
+    principal: Principal = Depends(require_writer),
 ) -> AssessmentRead:
-    return service.create_assessment(payload)
+    return service.create_assessment(payload, principal)
 
 
 @router.get("/assessments", response_model=AssessmentList)
-def list_assessments(service: AssessmentService = Depends(get_service)) -> AssessmentList:
-    return service.list_assessments()
+def list_assessments(
+    service: AssessmentService = Depends(get_service),
+    principal: Principal = Depends(require_reader),
+) -> AssessmentList:
+    return service.list_assessments(principal)
 
 
 @router.get("/assessments/{assessment_id}", response_model=AssessmentRead)
 def get_assessment(
     assessment_id: str,
     service: AssessmentService = Depends(get_service),
+    principal: Principal = Depends(require_reader),
 ) -> AssessmentRead:
-    return service.get_assessment(assessment_id)
+    return service.get_assessment(assessment_id, principal)
 
 
 @router.post("/assessments/{assessment_id}/assets", response_model=AssetRead, status_code=201)
@@ -64,8 +71,9 @@ def add_asset(
     assessment_id: str,
     payload: AssetCreate,
     service: AssessmentService = Depends(get_service),
+    principal: Principal = Depends(require_writer),
 ) -> AssetRead:
-    return service.add_asset(assessment_id, payload)
+    return service.add_asset(assessment_id, payload, principal)
 
 
 @router.post("/assessments/{assessment_id}/threats", response_model=ThreatRead, status_code=201)
@@ -73,8 +81,9 @@ def add_threat(
     assessment_id: str,
     payload: ThreatCreate,
     service: AssessmentService = Depends(get_service),
+    principal: Principal = Depends(require_writer),
 ) -> ThreatRead:
-    return service.add_threat(assessment_id, payload)
+    return service.add_threat(assessment_id, payload, principal)
 
 
 @router.post(
@@ -86,8 +95,9 @@ def add_vulnerability(
     assessment_id: str,
     payload: VulnerabilityCreate,
     service: AssessmentService = Depends(get_service),
+    principal: Principal = Depends(require_writer),
 ) -> VulnerabilityRead:
-    return service.add_vulnerability(assessment_id, payload)
+    return service.add_vulnerability(assessment_id, payload, principal)
 
 
 @router.post("/assessments/{assessment_id}/controls", response_model=ControlRead, status_code=201)
@@ -95,8 +105,9 @@ def add_control(
     assessment_id: str,
     payload: ControlCreate,
     service: AssessmentService = Depends(get_service),
+    principal: Principal = Depends(require_writer),
 ) -> ControlRead:
-    return service.add_control(assessment_id, payload)
+    return service.add_control(assessment_id, payload, principal)
 
 
 @router.post("/assessments/{assessment_id}/risks", response_model=RiskRead, status_code=201)
@@ -104,24 +115,28 @@ def add_risk(
     assessment_id: str,
     payload: RiskCreate,
     service: AssessmentService = Depends(get_service),
+    principal: Principal = Depends(require_writer),
 ) -> RiskRead:
-    return service.add_risk(assessment_id, payload)
+    return service.add_risk(assessment_id, payload, principal)
 
 
 @router.get("/assessments/{assessment_id}/risks", response_model=list[RiskRead])
 def list_risks(
     assessment_id: str,
     service: AssessmentService = Depends(get_service),
+    principal: Principal = Depends(require_reader),
 ) -> list[RiskRead]:
-    return service.list_risks(assessment_id)
+    return service.list_risks(assessment_id, principal)
 
 
 @router.post("/risk-assessments", response_model=RiskAssessmentResponse)
 def create_risk_assessment(
     payload: RiskAssessmentRequest,
     orchestrator: RiskOrchestrator = Depends(get_risk_orchestrator),
+    principal: Principal = Depends(require_risk_assessor),
 ) -> RiskAssessmentResponse:
     """Run RiskAgent + RiskEngine on a free-text scenario. Does not persist."""
+    _ = principal  # role enforced by dependency; assessment itself is not tenant-stored
     result = orchestrator.assess(payload.scenario)
     if not result.scored_risks:
         raise HTTPException(status_code=422, detail="The agent proposed no risks")

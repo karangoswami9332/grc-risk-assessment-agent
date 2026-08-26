@@ -4,11 +4,17 @@ from __future__ import annotations
 
 from pathlib import Path
 
-from sqlalchemy import Engine, create_engine, inspect
+from sqlalchemy import Engine, create_engine, inspect, text
 from sqlalchemy.orm import Session, sessionmaker
 
 from grc_agent.config import DEFAULT_SQLITE_PATH, Settings, get_settings
 from grc_agent.db.tables import Base
+
+# Columns added after the initial assessments schema (auth / multi-tenant ownership).
+_OWNERSHIP_COLUMNS: tuple[tuple[str, str], ...] = (
+    ("tenant_id", "VARCHAR(128) NOT NULL DEFAULT 'local'"),
+    ("owner_subject", "VARCHAR(255) NOT NULL DEFAULT 'local'"),
+)
 
 
 def sqlite_file_path(database_url: str) -> Path | None:
@@ -34,11 +40,36 @@ def create_db_engine(database_url: str | None = None) -> Engine:
     return create_engine(url, future=True, connect_args=connect_args)
 
 
+def ensure_assessment_ownership_columns(engine: Engine) -> list[str]:
+    """Non-destructive migration: add tenant_id / owner_subject if missing.
+
+    Existing rows receive the SQL DEFAULT ('local'). Never drops or rewrites data.
+    Returns the list of columns that were added.
+    """
+    inspector = inspect(engine)
+    if "assessments" not in inspector.get_table_names():
+        return []
+    existing = {col["name"] for col in inspector.get_columns("assessments")}
+    added: list[str] = []
+    with engine.begin() as connection:
+        for name, ddl_type in _OWNERSHIP_COLUMNS:
+            if name in existing:
+                continue
+            # SQLite supports ADD COLUMN; defaults backfill existing rows.
+            connection.execute(
+                # Column names come only from the fixed _OWNERSHIP_COLUMNS whitelist.
+                text(f"ALTER TABLE assessments ADD COLUMN {name} {ddl_type}")  # nosec B608
+            )
+            added.append(name)
+    return added
+
+
 def init_db(engine: Engine | None = None) -> Engine:
-    """Create tables if they do not exist. Returns the engine used."""
+    """Create tables if they do not exist and apply safe ownership-column migration."""
     db_engine = engine or create_db_engine()
     ensure_sqlite_directory(str(db_engine.url))
     Base.metadata.create_all(db_engine)
+    ensure_assessment_ownership_columns(db_engine)
     return db_engine
 
 

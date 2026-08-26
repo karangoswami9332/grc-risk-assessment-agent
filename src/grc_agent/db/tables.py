@@ -20,6 +20,8 @@ class AssessmentRow(Base):
     title: Mapped[str] = mapped_column(String(255), nullable=False)
     scenario: Mapped[str] = mapped_column(Text, nullable=False)
     environment_notes: Mapped[str] = mapped_column(Text, nullable=False, default="")
+    tenant_id: Mapped[str] = mapped_column(String(128), nullable=False, default="local", index=True)
+    owner_subject: Mapped[str] = mapped_column(String(255), nullable=False, default="local")
     created_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True), server_default=func.now(), nullable=False
     )

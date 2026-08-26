@@ -42,8 +42,10 @@ class AssessmentRepository:
         )
         return self._session.scalars(stmt).first()
 
-    def list_assessments(self) -> list[AssessmentRow]:
+    def list_assessments(self, *, tenant_id: str | None = None) -> list[AssessmentRow]:
         stmt = select(AssessmentRow).order_by(AssessmentRow.created_at.desc())
+        if tenant_id is not None:
+            stmt = stmt.where(AssessmentRow.tenant_id == tenant_id)
         return list(self._session.scalars(stmt).all())
 
     def add_asset(self, row: AssetRow) -> AssetRow:
