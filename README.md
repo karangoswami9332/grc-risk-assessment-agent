@@ -58,12 +58,13 @@ Package layout (`src/grc_agent/`):
 
 | Package | Role |
 | --- | --- |
-| `api/` | FastAPI app, routes, schemas, persistence service |
+| `api/` | FastAPI app, routes, schemas, persistence service, correlation-ID middleware |
 | `orchestrator/` | Scenario → retrieve → propose → score → map controls |
 | `agents/` | `RiskAgent` interface, mock and Ollama implementations |
 | `engine/` | Deterministic 5×5 risk matrix and `RiskEngine` |
 | `rag/` | Chunking, embeddings, in-memory store, retrieval |
 | `controls/` | Catalog load + control ID validation |
+| `observability/` | Correlation IDs, structured security/audit logs, in-process counters |
 | `llm/` | Local Ollama HTTP client |
 | `db/` | SQLite / SQLAlchemy persistence for CRUD assessments |
 | `models/` | Domain enums and entities |
@@ -277,7 +278,7 @@ Most tests use `MockRiskAgent` and/or a fake embedder. A small number of optiona
 
 ## Testing
 
-The suite currently includes **213** tests covering:
+The suite currently includes **304** tests covering:
 
 - RiskEngine matrix and scale validation
 - Orchestrator scoring ownership
@@ -285,9 +286,11 @@ The suite currently includes **213** tests covering:
 - RAG chunking, ingest, retrieval wiring, and `top_k` defaults
 - Control catalog parsing and mapping validation rules
 - FastAPI CRUD and `POST /risk-assessments` behavior
+- Offline security abuse cases and observability/audit checks (`tests/security/`, currently **91** tests)
 
 ```bash
 pytest
+pytest tests/security
 ```
 
 ## Example scenario and response
@@ -397,6 +400,7 @@ Names and control metadata come from the catalog parser. The API response `mappe
 - **Secrets must not be committed.** Use `.env` locally; only `.env.example` (non-secret names/values) belongs in Git. This project does not require cloud API keys for its default local path.
 - **Risk scoring is deterministic after the LLM proposal.** Changing the model should not silently redefine the 5×5 matrix.
 - **RAG context is advisory**, not authoritative. Retrieval improves prompting; validation and the RiskEngine still own compliance-critical outputs.
+- **Lightweight security observability** emits structured audit events (correlation / `X-Request-ID`, RAG/LLM/mapping/scoring metadata) without logging secrets, full prompts, full LLM responses, or full scenario text. In-process counters track assessments, RAG retrievals, and rejected control IDs. This is not a full observability stack (no OpenTelemetry/Prometheus/Grafana).
 
 ## Limitations / Future work
 
@@ -407,7 +411,7 @@ Names and control metadata come from the catalog parser. The API response `mappe
 - Live cloud security posture checks (AWS/Azure/GCP APIs)
 - Continuous monitoring or alerting pipelines
 - Automated remediation / ticket creation
-- Production-grade observability (metrics, tracing, structured audit trails)
+- Production-grade observability backends (distributed tracing, Prometheus/Grafana, log shipping)
 - Multi-framework mapping UI (ISO 27001 / NIST CSF / CIS as first-class products)
 - Authentication / multi-tenant authorization for the API
 - Persistent vector database (current store is in-process memory)

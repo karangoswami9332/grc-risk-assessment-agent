@@ -77,7 +77,9 @@ class AssessmentService:
             row.risks.append(self._risk_row(row.id, risk))
         stored = self._repo.add_assessment(row)
         loaded = self._repo.get_assessment(stored.id)
-        assert loaded is not None
+        if loaded is None:
+            # Internal persistence invariant — not an AssessmentNotFoundError (client 404).
+            raise RuntimeError("Assessment could not be reloaded after create")
         return self._to_assessment_read(loaded)
 
     def get_assessment(self, assessment_id: str) -> AssessmentRead:

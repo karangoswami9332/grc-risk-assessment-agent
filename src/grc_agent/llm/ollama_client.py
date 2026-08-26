@@ -6,6 +6,7 @@ import json
 import urllib.error
 import urllib.request
 from typing import Any
+from urllib.parse import urlparse
 
 from grc_agent.llm.errors import OllamaResponseError, OllamaUnavailableError
 
@@ -15,6 +16,22 @@ DEFAULT_OLLAMA_EMBED_MODEL = "nomic-embed-text"
 CHAT_PATH = "/api/chat"
 EMBED_PATH = "/api/embed"
 DEFAULT_TIMEOUT_SECONDS = 180
+_ALLOWED_URL_SCHEMES = frozenset({"http", "https"})
+
+
+def ensure_http_url(url: str) -> str:
+    """Accept only http/https Ollama endpoints; reject file:, ftp:, javascript:, etc."""
+    text = (url or "").strip()
+    if not text:
+        raise ValueError("Ollama URL must not be empty")
+    parsed = urlparse(text)
+    scheme = (parsed.scheme or "").lower()
+    if scheme not in _ALLOWED_URL_SCHEMES:
+        label = scheme if scheme else "missing"
+        raise ValueError(f"Ollama URL must use http:// or https://, got scheme {label!r}")
+    if not parsed.netloc:
+        raise ValueError("Ollama URL must include a host")
+    return text
 
 
 class OllamaChatClient:
@@ -27,7 +44,10 @@ class OllamaChatClient:
         timeout_seconds: float = DEFAULT_TIMEOUT_SECONDS,
         embed_model: str = DEFAULT_OLLAMA_EMBED_MODEL,
     ) -> None:
-        self.host = host.rstrip("/")
+        candidate = host.rstrip("/")
+        # Validate using the same shape as chat/embed URLs (host + path).
+        ensure_http_url(f"{candidate}{CHAT_PATH}")
+        self.host = candidate
         self.model = model
         self.timeout_seconds = timeout_seconds
         self.embed_model = embed_model
@@ -41,23 +61,25 @@ class OllamaChatClient:
         return f"{self.host}{EMBED_PATH}"
 
     def _post_json(self, url: str, payload: dict[str, Any]) -> dict[str, Any]:
+        safe_url = ensure_http_url(url)
         request = urllib.request.Request(
-            url,
+            safe_url,
             data=json.dumps(payload).encode("utf-8"),
             headers={"Content-Type": "application/json"},
             method="POST",
         )
         try:
-            with urllib.request.urlopen(request, timeout=self.timeout_seconds) as response:
+            # safe_url was checked for http/https only (see ensure_http_url).
+            with urllib.request.urlopen(request, timeout=self.timeout_seconds) as response:  # nosec B310
                 raw = response.read().decode("utf-8")
         except urllib.error.HTTPError as exc:
-            raise OllamaUnavailableError(f"Ollama HTTP error {exc.code} from {url}") from exc
+            raise OllamaUnavailableError(f"Ollama HTTP error {exc.code} from {safe_url}") from exc
         except urllib.error.URLError as exc:
             raise OllamaUnavailableError(
-                f"Ollama is unavailable at {url}. Is Ollama running? {exc.reason}"
+                f"Ollama is unavailable at {safe_url}. Is Ollama running? {exc.reason}"
             ) from exc
         except TimeoutError as exc:
-            raise OllamaUnavailableError(f"Ollama request timed out contacting {url}") from exc
+            raise OllamaUnavailableError(f"Ollama request timed out contacting {safe_url}") from exc
 
         try:
             body = json.loads(raw)

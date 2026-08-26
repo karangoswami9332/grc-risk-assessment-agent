@@ -8,6 +8,7 @@ from fastapi import FastAPI, Request
 from fastapi.responses import JSONResponse
 
 from grc_agent.agents.factory import create_risk_agent
+from grc_agent.api.middleware import CorrelationIdMiddleware
 from grc_agent.api.routes import router
 from grc_agent.api.service import AssessmentNotFoundError
 from grc_agent.config import Settings, get_settings
@@ -38,6 +39,7 @@ def create_app(
         description="Assessments persist in SQLite. POST /risk-assessments uses RiskAgent + RiskEngine.",
         version="0.3.0",
     )
+    app.add_middleware(CorrelationIdMiddleware)
     app.state.settings = resolved
     app.state.db_engine = engine
     app.state.session_factory = session_factory
