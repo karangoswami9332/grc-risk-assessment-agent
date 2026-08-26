@@ -1,0 +1,74 @@
+# Secrets and local environment
+.env
+.env.*
+!.env.example
+
+# Python bytecode and packaging
+__pycache__/
+*.py[cod]
+*$py.class
+*.so
+.Python
+build/
+dist/
+eggs/
+*.egg
+*.egg-info/
+.eggs/
+pip-wheel-metadata/
+share/python-wheels/
+MANIFEST
+
+# Virtual environments
+.venv/
+venv/
+env/
+ENV/
+
+# Test / coverage / type / lint caches
+.pytest_cache/
+.coverage
+.coverage.*
+coverage.xml
+htmlcov/
+.tox/
+.nox/
+.mypy_cache/
+.ruff_cache/
+.hypothesis/
+.pytype/
+.dmypy.json
+dmypy.json
+
+# Editors / IDE
+.idea/
+.vscode/
+*.swp
+*.swo
+*~
+
+# OS temporary files
+.DS_Store
+Thumbs.db
+desktop.ini
+Desktop.ini
+
+# Local SQLite and runtime data (keep data/knowledge/ and data/.gitkeep)
+*.db
+*.sqlite
+*.sqlite3
+data/local/
+uploads/
+
+# Logs and local scratch
+*.log
+*.tmp
+*.temp
+_live_*.py
+
+# LLM / RAG / local model artifacts (not used by this repo's committed sources)
+models/
+*.gguf
+.chroma/
+.lancedb/
+.ollama/
