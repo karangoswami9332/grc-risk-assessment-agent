@@ -1,284 +1,342 @@
 # GRC Risk Assessment Agent
 
-Local-first **Governance, Risk, and Compliance (GRC)** risk assessment service.
+[![Python 3.11+](https://img.shields.io/badge/python-3.11%2B-blue.svg)](https://www.python.org/downloads/)
+[![FastAPI](https://img.shields.io/badge/API-FastAPI-009688.svg)](https://fastapi.tiangolo.com/)
+[![Tests](https://img.shields.io/badge/tests-345%20passing-brightgreen.svg)](#security-testing)
+[![License: MIT](https://img.shields.io/badge/license-MIT-yellow.svg)](LICENSE)
 
-Describe a security scenario in plain language. The API returns a structured risk proposal (assets, threats, vulnerabilities, risks), a **deterministic** inherent risk score and rating, and optionally **validated** control mappings from an internal control catalog.
+AI-assisted **Governance, Risk, and Compliance (GRC)** risk assessment system. It combines optional local LLM reasoning and RAG retrieval with **deterministic risk scoring**, an **authoritative control catalog**, control-ID validation, JWT authentication/authorization, multi-tenant isolation, structured security audit logging, and a dedicated offline security test suite.
 
-**Core design rule:** the LLM may propose likelihood, impact, and narrative — it does **not** own `risk_score` or `risk_rating`. Those are computed only by the Python `RiskEngine` as `likelihood × impact` on a fixed 5×5 matrix.
+Describe a security scenario in plain language. The API returns structured assets, threats, vulnerabilities, and risks — with likelihood/impact proposed by the agent, but **`risk_score` / `risk_rating` owned only by Python**, and mapped controls accepted only after catalog + RAG-candidate validation.
 
-## Problem it solves
+This is a **local-first portfolio / learning prototype**, not a complete enterprise GRC platform and not enterprise OIDC identity management.
 
-Security and GRC teams often need a fast first-pass risk assessment from an unstructured scenario (for example: “a cloud admin has excessive permissions”). Spreadsheets and ad-hoc notes do not enforce consistent scoring, and raw LLM answers invent scores and control IDs.
+---
 
-This project demonstrates a safer pattern:
+## Why I Built This
 
-- Use a local LLM for structured identification and rationale
-- Keep scoring in deterministic code
-- Treat retrieved knowledge and LLM control IDs as **advisory** until validated against an authoritative catalog and retrieved candidates
+Security and GRC teams often need a fast first-pass assessment from an unstructured scenario (for example, excessive cloud admin privileges). Spreadsheets and ad-hoc notes do not enforce consistent scoring. Raw LLM answers invent risk scores and control IDs.
 
-## Why this is a GRC / security project
+Given a scenario, this system helps identify:
 
-It implements a small but realistic GRC assessment loop:
+- assets
+- threats
+- vulnerabilities
+- risks
+- risk likelihood and impact (proposed)
+- risk treatment (when proposed)
+- applicable security controls (validated)
 
-| Concern | How this project handles it |
+**The LLM is not trusted with compliance-critical decisions by itself.** Scoring, control identity/names, and access boundaries stay in deterministic application code.
+
+---
+
+## Key Design Principle
+
+| Concern | Owner |
 | --- | --- |
-| Risk identification | Structured proposal from mock or Ollama agent |
-| Inherent risk scoring | `RiskEngine` (not the LLM) |
-| Control awareness | Internal GRC Control Catalog (`CTRL-*`) |
-| Control mapping trust | Catalog + RAG-candidate validation |
-| Local / private inference | Optional Ollama (`llama3.1:8b`, `nomic-embed-text`) — no cloud LLM API required |
+| Narrative / structured proposal | LLM (or mock agent) |
+| Grounding context | RAG (advisory) |
+| What is allowed into the result | Schema + control-ID validation |
+| `risk_score` / `risk_rating` | **RiskEngine** |
+| Control ID + display name | **Control catalog** |
+| Who can read/write which assessments | **Authorization + tenant isolation** |
 
-This is a **portfolio / learning / local prototype**, not a complete GRC platform.
+```text
+Scenario
+   ↓
+RAG Retrieval (optional)
+   ↓
+LLM / Mock Risk Proposal
+   ↓
+Schema Validation (Pydantic)
+   ↓
+Control ID Validation (catalog ∩ RAG candidates)
+   ↓
+Deterministic RiskEngine (likelihood × impact)
+   ↓
+Tenant / Authorization Checks (API)
+   ↓
+Audited API Response
+```
+
+Probabilistic AI reasoning is intentionally separated from security-critical logic.
+
+---
 
 ## Architecture
 
 ```mermaid
-flowchart LR
-  A[User scenario] --> B[FastAPI]
-  B --> C[Risk Orchestrator]
-  C --> D[RAG retrieval]
-  D --> E[Ollama Risk Agent]
-  E --> F[Structured RiskProposal]
-  F --> G[RiskEngine]
-  F --> H[Control mapping validation]
-  G --> I[API response]
-  H --> I
+flowchart TB
+  Client[Client]
+  API[FastAPI API]
+  Auth[Authentication / Authorization]
+  Orch[Risk Orchestrator]
+  RAG[RAG Retriever]
+  Emb[Embeddings]
+  Store[In-memory knowledge store]
+  Agent[Risk Agent]
+  Mock[MockRiskAgent]
+  Ollama[OllamaRiskAgent]
+  Engine[Deterministic RiskEngine]
+  Controls[Control catalog + mapping]
+  DB[(SQLite persistence)]
+  Obs[Security observability]
+
+  Client --> API
+  API --> Auth
+  Auth --> Orch
+  Auth --> DB
+  Orch --> RAG
+  RAG --> Emb
+  RAG --> Store
+  Orch --> Agent
+  Agent --> Mock
+  Agent --> Ollama
+  Orch --> Engine
+  Orch --> Controls
+  Orch --> Obs
+  API --> Obs
 ```
 
-End-to-end flow for `POST /risk-assessments`:
-
-1. **FastAPI** accepts a free-text scenario.
-2. **Risk Orchestrator** optionally retrieves RAG context (when Ollama + RAG are enabled).
-3. **Risk Agent** (`MockRiskAgent` or `OllamaRiskAgent`) returns a Pydantic-validated `RiskProposal`.
-4. **RiskEngine** scores each proposed risk: `risk_score = likelihood × impact`, then maps the score to a rating band.
-5. **Control mapping** accepts only control IDs that appear in both the authoritative catalog and the retrieved RAG context; names always come from the catalog.
-6. The API returns proposal, scored risks, primary score/rating, rationale, and `mapped_controls`.
-
-Package layout (`src/grc_agent/`):
+Packages under `src/grc_agent/`:
 
 | Package | Role |
 | --- | --- |
-| `api/` | FastAPI app, routes, schemas, persistence service, correlation-ID middleware |
+| `api/` | FastAPI app, routes, schemas, assessment service, correlation middleware |
 | `orchestrator/` | Scenario → retrieve → propose → score → map controls |
-| `agents/` | `RiskAgent` interface, mock and Ollama implementations |
-| `engine/` | Deterministic 5×5 risk matrix and `RiskEngine` |
-| `rag/` | Chunking, embeddings, in-memory store, retrieval |
-| `controls/` | Catalog load + control ID validation |
-| `observability/` | Correlation IDs, structured security/audit logs, in-process counters |
-| `auth/` | JWT authentication, roles, tenant-aware authorization dependencies |
+| `agents/` | `RiskAgent` interface; `MockRiskAgent` and `OllamaRiskAgent` |
+| `rag/` | Chunking, embeddings, in-memory store, retrieval, startup wiring |
+| `controls/` | Authoritative catalog load + control-ID / mapping validation |
+| `engine/` | Fixed 5×5 matrix and `RiskEngine` |
 | `llm/` | Local Ollama HTTP client |
-| `db/` | SQLite / SQLAlchemy persistence for CRUD assessments |
+| `auth/` | JWT validation, roles, FastAPI authz dependencies, tenant policies |
+| `observability/` | `X-Request-ID`, structured audit events, in-process counters |
+| `db/` | SQLAlchemy / SQLite models, repository, non-destructive ownership migration |
 | `models/` | Domain enums and entities |
-| `config.py` | Environment-based settings |
+| `config.py` | Environment settings + production auth fail-closed validation |
 
-## RAG pipeline
+**Not present:** Kubernetes, Redis, Kafka, OpenTelemetry exporters, Prometheus/Grafana, cloud CSP APIs, or an external IdP.
 
-RAG is **optional** and runs only when **both** are true:
+### RAG (optional)
 
-- `GRC_RISK_AGENT=ollama`
-- `GRC_RAG_ENABLED=true`
+Runs only when **both** `GRC_RISK_AGENT=ollama` and `GRC_RAG_ENABLED=true`:
 
-Pipeline:
+1. Ingest markdown under `data/knowledge/` (`*.md`, non-recursive)
+2. Control-aware chunking for `controls.md`; general chunking for other docs
+3. Embed with local Ollama `nomic-embed-text` (fake embedder in tests)
+4. Store vectors **in process** (cosine similarity; no FAISS/Chroma)
+5. Retrieve top **5** chunks (`DEFAULT_TOP_K`) as advisory LLM context
+6. Extract candidate control IDs from that context for mapping gates
 
-1. At startup, markdown under `data/knowledge/` is ingested (non-recursive `*.md`).
-2. `access_control.md` uses general text chunking.
-3. `controls.md` uses control-aware chunking so each `CTRL-*` section stays atomic when possible.
-4. Embeddings use local Ollama **`nomic-embed-text`** (or a fake embedder in tests).
-5. Vectors are stored in an **in-memory** cosine-similarity store (no FAISS/Chroma dependency).
-6. On each assessment, the orchestrator retrieves the top **5** chunks (`DEFAULT_TOP_K`) and formats them as advisory context for the LLM.
-7. Candidate control IDs are extracted from that formatted context for mapping validation.
+### RiskEngine
 
-Manual diagnostics (not used by the API):
+- Inputs: likelihood and impact on a **1–5** scale
+- Score: **`likelihood × impact`** (1–25)
+- Ratings: `low` 1–4 · `medium` 5–9 · `high` 10–16 · `critical` 17–25
 
-```bash
-python -m grc_agent.rag.debug_retrieve_knowledge --query "your scenario"
-```
+### Control catalog
 
-## Ollama / llama3.1:8b
+Authoritative source: [`data/knowledge/controls.md`](data/knowledge/controls.md) (10 `CTRL-*` entries). Catalog names are never taken from free-form LLM text.
 
-When `GRC_RISK_AGENT=ollama`:
+Mapping requires each ID to be in the **catalog** and in **retrieved RAG candidates**. Failed IDs are dropped; the assessment still succeeds.
 
-- Chat model default: **`llama3.1:8b`** via `POST {OLLAMA_HOST}/api/chat`
-- Embedding model default: **`nomic-embed-text`**
-- Host default: `http://127.0.0.1:11434`
-- Chat timeout default: **180** seconds
+---
 
-There is **no** OpenAI / Anthropic / LangChain / LangGraph dependency. Inference stays on your machine when Ollama is installed and the models are pulled.
+## Why This Is More Than an LLM Wrapper
 
-Default agent is **`mock`** so tests and local API use need no LLM.
+The LLM (when used) is one step in an **orchestrated decision workflow**:
 
-## Risk assessment flow
+1. Receive a security scenario (`POST /risk-assessments` or persisted CRUD graph).
+2. Optionally retrieve relevant knowledge (RAG).
+3. Build advisory context for the risk agent.
+4. Generate a structured `RiskProposal` (Pydantic; score fields forbidden).
+5. Validate proposed control IDs against catalog ∩ candidates.
+6. Resolve display names from the authoritative catalog.
+7. Calculate inherent risk with `RiskEngine`.
+8. Apply treatment fields when present on the proposal / create payloads.
+9. Persist assessments and children in SQLite where using the CRUD API (`POST /risk-assessments` itself is **not** persisted).
+10. Emit security/audit telemetry (correlation ID + structured events).
 
-```text
-POST /risk-assessments  { "scenario": "..." }
-        │
-        ▼
-RiskOrchestrator.assess(scenario)
-        │
-        ├─(optional) Retriever.retrieve → format_hits → context
-        ├─ RiskAgent.propose(scenario, context) → RiskProposal
-        ├─ RiskEngine.calculate_inherent_risk(likelihood, impact) per risk
-        └─ resolve_mapped_controls(selected_control_ids, candidates, catalog)
-        │
-        ▼
-RiskAssessmentResponse
-```
+There is **no** autonomous remediation, ticketing, or continuous monitoring.
 
-`RiskProposal` forbids `risk_score` / `risk_rating` (`extra="forbid"`). Callers also cannot inject those fields on the request.
+---
 
-## RiskEngine and deterministic scoring
+## Security Architecture
 
-`RiskEngine` is the only component allowed to compute inherent risk:
+### Authentication
 
-- Inputs: integer **likelihood** and **impact** on a **1–5** scale
-- Score: **`likelihood × impact`** (range 1–25)
-- Rating bands (inclusive):
+- Bearer JWT via **PyJWT**
+- Configured algorithm only (header `alg` must match; `alg=none` rejected)
+- Signature, expiry (`exp`), and optional issuer/audience verification
+- HS* uses `JWT_SECRET` only; RS*/ES* uses `JWT_PUBLIC_KEY` only (no algorithm-confusion key mixing)
+- Production (`GRC_APP_ENV=production`) **fail-closed**: auth required; issuer/audience required; validated in `assert_auth_configuration()` for both `get_settings()` and `create_app(Settings(...))`
+- Development/test may set `AUTH_ENABLED=false` (local admin principal)
 
-| Score | Rating |
-| ---: | --- |
-| 1–4 | `low` |
-| 5–9 | `medium` |
-| 10–16 | `high` |
-| 17–25 | `critical` |
+**This is a local/test JWT authentication layer — not enterprise OIDC/IdP integration** (no login UI, JWKS polling, refresh tokens, or managed directory).
 
-Example: likelihood `4`, impact `5` → score `20` → `critical`.
+### Authorization
 
-## Control catalog
-
-Authoritative source: [`data/knowledge/controls.md`](data/knowledge/controls.md) (Internal GRC Control Catalog).
-
-Examples:
-
-- `CTRL-AC-001` — Enforce Least Privilege Access
-- `CTRL-AC-002` — Require Multi-Factor Authentication
-- `CTRL-CLD-001` — Block Public Access to Cloud Storage
-- `CTRL-CLD-002` — Review Cloud IAM Configurations
-- … (10 controls total in the current catalog)
-
-Catalog metadata (ID + name, and related fields in the markdown) is loaded by Python. The LLM is **not** the source of truth for control names.
-
-## Control mapping and validation
-
-When the agent returns `selected_control_ids`, the app validates each ID:
-
-1. Must exist in the **authoritative catalog**
-2. Must appear in **retrieved RAG candidate IDs** (from the formatted context)
-3. Display **name** always comes from the catalog
-
-Invalid, invented, or non-retrieved IDs are dropped. The assessment still succeeds; `mapped_controls` may be empty.
-
-## FastAPI API
-
-Main orchestrated endpoint:
-
-| Method | Path | Description |
-| --- | --- | --- |
-| `POST` | `/risk-assessments` | Free-text scenario → agent + RiskEngine + optional mapping (**not persisted**) |
-
-CRUD assessment graph (SQLite-backed):
-
-| Method | Path | Description |
-| --- | --- | --- |
-| `POST` | `/assessments` | Create assessment (optional nested children) |
-| `GET` | `/assessments` | List assessments |
-| `GET` | `/assessments/{assessment_id}` | Get assessment graph |
-| `POST` | `/assessments/{assessment_id}/assets` | Add asset |
-| `POST` | `/assessments/{assessment_id}/threats` | Add threat |
-| `POST` | `/assessments/{assessment_id}/vulnerabilities` | Add vulnerability |
-| `POST` | `/assessments/{assessment_id}/controls` | Add control |
-| `POST` | `/assessments/{assessment_id}/risks` | Add risk (**scored by RiskEngine**) |
-| `GET` | `/assessments/{assessment_id}/risks` | List risks |
-
-Unknown IDs → **404**. Invalid bodies / out-of-range scales / forbidden score fields → **422**.
-
-### Swagger / OpenAPI
-
-With the API running, open:
-
-- Interactive docs: [http://127.0.0.1:8000/docs](http://127.0.0.1:8000/docs)
-- OpenAPI JSON: [http://127.0.0.1:8000/openapi.json](http://127.0.0.1:8000/openapi.json)
-
-Use **Try it out** on `POST /risk-assessments` to exercise the orchestrator.
-
-## Configuration
-
-| Variable | Default | Meaning |
-| --- | --- | --- |
-| `GRC_DATABASE_URL` | `sqlite:///data/grc_agent.db` | SQLite URL |
-| `GRC_RISK_AGENT` | `mock` | `mock` or `ollama` |
-| `OLLAMA_HOST` | `http://127.0.0.1:11434` | Ollama base URL |
-| `OLLAMA_MODEL` | `llama3.1:8b` | Chat model |
-| `OLLAMA_EMBED_MODEL` | `nomic-embed-text` | Embedding model |
-| `OLLAMA_TIMEOUT_SECONDS` | `180` | Chat HTTP timeout |
-| `GRC_RAG_ENABLED` | `false` | Enable RAG ingest/retrieve (requires `ollama`) |
-| `GRC_RAG_DEBUG` | `false` | Print/log retrieved context before propose |
-| `GRC_APP_ENV` | `development` | `development`, `test`, or `production` |
-| `AUTH_ENABLED` | `false` | Require Bearer JWT when `true`. **Required `true` in production** |
-| `JWT_ALGORITHM` | `HS256` | Signing algorithm (`HS*` needs `JWT_SECRET`; `RS*`/`ES*` need `JWT_PUBLIC_KEY`) |
-| `JWT_ISSUER` | _(empty)_ | Optional `iss` claim; verified when set (**required in production**) |
-| `JWT_AUDIENCE` | _(empty)_ | Optional `aud` claim; verified when set (**required in production**) |
-| `JWT_SECRET` | _(empty)_ | HMAC secret for local/test HS256 — **never commit real values** |
-| `JWT_PUBLIC_KEY` | _(empty)_ | PEM public key for RS256/ES256 (OIDC-style verification) |
-
-Copy [`.env.example`](.env.example) to `.env` for local overrides. **Do not commit `.env`.**
-
-## Authentication and authorization
-
-Local/test JWT authentication with an architecture that can later integrate with an enterprise OIDC provider. This is **not** a full identity provider (no login UI, user directory, refresh tokens, or managed JWKS fetch).
-
-### Authentication model
-
-- When `GRC_APP_ENV` is `development` or `test` and `AUTH_ENABLED=false` (default), routes use a local admin principal so offline tests and local mock usage keep working without tokens.
-- When `AUTH_ENABLED=true`, callers must send `Authorization: Bearer <JWT>`.
-- When `GRC_APP_ENV=production`, the process **refuses to start** unless `AUTH_ENABLED` is explicitly `true` (fail closed). Production also requires `JWT_ISSUER` and `JWT_AUDIENCE`.
-- Tokens are validated for structure, signature, expiry, and configured issuer/audience. The allowed algorithm comes **only** from configuration (header `alg` must match; `alg=none` is rejected). Symmetric and asymmetric key material are never mixed.
-- Failures return **HTTP 401** with a generic body. Tokens are never logged or echoed in errors.
-
-Expected JWT claims (minimum): `sub`, `role` (`admin` | `assessor` | `viewer`), `tenant_id` (or `tid`), `exp`, `iat`.
-
-### Authorization model
+Roles that exist: **`admin`**, **`assessor`**, **`viewer`**.
 
 | Endpoint class | admin | assessor | viewer |
 | --- | --- | --- | --- |
-| `POST /assessments` and nested writes (`/assets`, `/threats`, …) | allowed | allowed | **403** |
-| `GET /assessments`, `GET /assessments/{id}`, `GET .../risks` | allowed | allowed* | allowed* |
+| `POST /assessments` and nested writes | allowed | allowed | **403** |
+| `GET /assessments`, `GET …/{id}`, `GET …/risks` | allowed | allowed* | allowed* |
 | `POST /risk-assessments` | allowed | allowed | **403** |
 
-\*Non-admin reads/writes are **tenant-scoped**. Cross-tenant access returns **404** (not 403) to limit resource enumeration. Admins may list/read across tenants.
+\*Non-admin access is **tenant-scoped**. Cross-tenant → **404**. Admin may cross tenants. Missing/invalid auth → **401**.
 
-Persisted assessments store `tenant_id` and `owner_subject` from the authenticated principal only. Clients cannot set these via request bodies (`extra=forbid` on create schemas).
+(`require_risk_assessor` is a FastAPI dependency alias for admin+assessor on the orchestrator route — not a fourth role.)
 
-### Database ownership columns
+### Tenant isolation
 
-Fresh databases get `tenant_id` and `owner_subject` via SQLAlchemy `create_all`. Existing pre-auth SQLite databases are upgraded with a **non-destructive** `ALTER TABLE ... ADD COLUMN` (defaults `'local'` for existing rows). No data is deleted.
+- `tenant_id` and `owner_subject` come from the authenticated principal on create
+- Clients cannot supply those fields (`AssessmentCreate` uses `extra="forbid"`)
+- List/get/nested reads and writes are tenant-scoped for non-admins
+- Cross-tenant discovery is reduced by returning **404**
 
-### Local development with auth enabled
+### Security observability
+
+- `X-Request-ID` / correlation IDs
+- Structured audit events (metadata only), including:
+  - `authentication_failed`, `authentication_succeeded`, `authorization_denied`
+  - `assessment_started`, `rag_retrieval_completed`, `llm_proposal_generated`
+  - `control_mapping_completed`, `invalid_control_id_rejected`, `risk_scored`
+  - `assessment_completed`, `assessment_failed`
+- Sensitive keys (tokens, secrets, Authorization headers, full claims payloads, etc.) are stripped from audit fields
+- Full prompts, full LLM responses, and full scenario text are not logged as audit content
+
+### Database migration safety
+
+Fresh DBs get `tenant_id` / `owner_subject` via `create_all`. Existing pre-auth SQLite DBs are upgraded with **non-destructive** `ALTER TABLE … ADD COLUMN` (defaults `'local'` for existing rows). No DROP / data wipe. Migration is idempotent on restart.
+
+---
+
+## Threat Model
+
+| Threat | Example | Mitigation |
+| --- | --- | --- |
+| Prompt injection | Scenario tries to force control selection | Schema + catalog ∩ RAG candidate validation |
+| Control hallucination | Invented `CTRL-999` | Control ID validation |
+| Control name spoofing | Fake control name in LLM text | Catalog-authoritative names |
+| Risk score manipulation | Client/LLM supplies `risk_score` | Forbidden on schemas; RiskEngine owns scoring |
+| RAG poisoning | Retrieved text pushes invalid IDs | Candidate validation still required |
+| JWT tampering | Modified role/tenant/subject | Signature verification + claim checks |
+| Algorithm confusion | HS under RS config | Configured alg + separated key material |
+| Tenant IDOR | Access another tenant’s assessment | Tenant-scoped queries / 404 |
+| Ownership spoofing | Body `tenant_id` / `owner_subject` | Server-derived ownership; 422 on extra fields |
+| Secret leakage | Token in logs/errors | Audit filtering + generic 401/403 bodies |
+
+---
+
+## Security Testing
+
+Verified collection counts in this repository:
+
+| Suite | Count |
+| --- | --- |
+| Full `pytest` | **345** |
+| `tests/security` | **132** |
+| Bandit (`bandit -r src/`) | **0 findings** (as of last local run) |
+
+Coverage includes (among others): prompt injection, hallucinated control IDs, RAG candidate constraints, control-name spoofing, score smuggling, malformed LLM output, API error hygiene, secret-leakage checks, authn/authz/JWT attacks, tenant isolation / IDOR, ownership spoofing, production auth fail-closed, schema ownership migration, audit/correlation-ID behavior.
 
 ```bash
-# Windows PowerShell
-$env:GRC_APP_ENV="development"
-$env:AUTH_ENABLED="true"
-$env:JWT_ALGORITHM="HS256"
-$env:JWT_ISSUER="grc-agent-local"
-$env:JWT_AUDIENCE="grc-agent-api"
-$env:JWT_SECRET="replace-with-a-long-random-local-secret"
-uvicorn grc_agent.api.app:create_app --factory --reload
-```
-
-Mint a short-lived HS256 JWT with the same issuer/audience/secret for manual `curl`/Swagger calls. Prefer regenerating secrets locally; never commit them.
-
-Security tests:
-
-```bash
+pytest
 pytest tests/security -v --tb=short
+bandit -r src/ -f txt
 ```
 
-## How to run locally
+Optional dependency scan (not a CI gate in this repo): `pip-audit`. Recent local scans reported **no PyJWT / FastAPI / pydantic / SQLAlchemy / uvicorn advisories**; **pip** itself may show tooling advisories — upgrade pip when convenient.
 
-Requirements:
+---
 
-- Python **3.11+**
-- Optional: [Ollama](https://ollama.com/) with `llama3.1:8b` and `nomic-embed-text` for the LLM/RAG path
+## Example
+
+Scenario used throughout development:
+
+> A cloud administrator has excessive permissions and can access systems and sensitive data that are not required for their job responsibilities.
+
+### Mock agent (default, offline)
+
+Likelihood/impact are fixed (`4` × `5` → score **20**, rating `critical`). `mapped_controls` is empty because the mock agent does not select catalog IDs.
+
+```bash
+curl -X POST http://127.0.0.1:8000/risk-assessments ^
+  -H "Content-Type: application/json" ^
+  -d "{\"scenario\": \"A cloud administrator has excessive permissions and can access systems and sensitive data that are not required for their job responsibilities.\"}"
+```
+
+### Ollama + RAG path (illustrative)
+
+When Ollama and RAG are enabled, the agent may propose likelihood/impact and `selected_control_ids`. Only IDs that pass **catalog ∩ retrieved candidates** appear in `mapped_controls`, with **catalog names**. Example shape after validation (fields abbreviated):
+
+```json
+{
+  "scenario": "A cloud administrator has excessive permissions and can access systems and sensitive data that are not required for their job responsibilities.",
+  "risk_score": 25,
+  "risk_rating": "critical",
+  "scored_risks": [
+    {
+      "likelihood": 5,
+      "impact": 5,
+      "risk_score": 25,
+      "risk_rating": "critical"
+    }
+  ],
+  "mapped_controls": [
+    {
+      "control_id": "CTRL-CLD-002",
+      "name": "Review Cloud IAM Configurations"
+    },
+    {
+      "control_id": "CTRL-AC-001",
+      "name": "Enforce Least Privilege Access"
+    }
+  ]
+}
+```
+
+Important security behavior:
+
+- The LLM may **propose** controls; only validated catalog/RAG survivors remain.
+- Score **25** is `5 × 5` from **RiskEngine**, not a trusted LLM field.
+
+---
+
+## API
+
+Implemented routes (see `src/grc_agent/api/routes.py`). When `AUTH_ENABLED=false` (development/test default), a local admin principal is used. When auth is enabled, send `Authorization: Bearer <JWT>`.
+
+| Method | Path | Auth roles | Purpose |
+| --- | --- | --- | --- |
+| `POST` | `/risk-assessments` | admin, assessor | Orchestrated assessment (**not persisted**) |
+| `POST` | `/assessments` | admin, assessor | Create persisted assessment (+ optional children) |
+| `GET` | `/assessments` | admin, assessor, viewer | List assessments (tenant-scoped except admin) |
+| `GET` | `/assessments/{id}` | admin, assessor, viewer | Get assessment graph |
+| `POST` | `/assessments/{id}/assets` | admin, assessor | Add asset |
+| `POST` | `/assessments/{id}/threats` | admin, assessor | Add threat |
+| `POST` | `/assessments/{id}/vulnerabilities` | admin, assessor | Add vulnerability |
+| `POST` | `/assessments/{id}/controls` | admin, assessor | Add control |
+| `POST` | `/assessments/{id}/risks` | admin, assessor | Add risk (**RiskEngine scores**) |
+| `GET` | `/assessments/{id}/risks` | admin, assessor, viewer | List risks |
+
+Unknown IDs → **404**. Invalid bodies / forbidden score fields → **422**.
+
+Docs while running: [http://127.0.0.1:8000/docs](http://127.0.0.1:8000/docs)
+
+Minimal orchestrator request:
+
+```json
+{ "scenario": "A cloud administrator has excessive permissions…" }
+```
+
+---
+
+## Running Locally
+
+**Requirements:** Python **3.11+**. Optional: [Ollama](https://ollama.com/) with `llama3.1:8b` and `nomic-embed-text`.
 
 ```bash
 python -m venv .venv
@@ -292,7 +350,27 @@ python -m venv .venv
 pip install -e ".[dev]"
 ```
 
-### Mock agent (default — no Ollama)
+Copy [`.env.example`](.env.example) to `.env` for local overrides. **Never commit secrets.**
+
+### Configuration (summary)
+
+| Variable | Default | Meaning |
+| --- | --- | --- |
+| `GRC_DATABASE_URL` | `sqlite:///data/grc_agent.db` | SQLite URL |
+| `GRC_RISK_AGENT` | `mock` | `mock` or `ollama` |
+| `OLLAMA_HOST` | `http://127.0.0.1:11434` | Ollama base URL |
+| `OLLAMA_MODEL` | `llama3.1:8b` | Chat model |
+| `OLLAMA_EMBED_MODEL` | `nomic-embed-text` | Embedding model |
+| `OLLAMA_TIMEOUT_SECONDS` | `180` | Chat timeout |
+| `GRC_RAG_ENABLED` | `false` | RAG (requires `ollama`) |
+| `GRC_RAG_DEBUG` | `false` | Print retrieved context before propose |
+| `GRC_APP_ENV` | `development` | `development` \| `test` \| `production` |
+| `AUTH_ENABLED` | `false` | Require JWT; **must be true in production** |
+| `JWT_ALGORITHM` | `HS256` | HS* → secret; RS*/ES* → public key |
+| `JWT_ISSUER` / `JWT_AUDIENCE` | empty | Verified when set; **required in production** |
+| `JWT_SECRET` / `JWT_PUBLIC_KEY` | empty | Key material — never commit real values |
+
+### Mock mode (default)
 
 ```bash
 uvicorn grc_agent.api.app:create_app --factory --reload
@@ -306,183 +384,87 @@ $env:GRC_RISK_AGENT="ollama"
 uvicorn grc_agent.api.app:create_app --factory --reload
 ```
 
-```bash
-# macOS / Linux
-GRC_RISK_AGENT=ollama uvicorn grc_agent.api.app:create_app --factory --reload
-```
-
 ### Ollama with RAG
 
 ```bash
-# Windows PowerShell
 $env:GRC_RISK_AGENT="ollama"
 $env:GRC_RAG_ENABLED="true"
 uvicorn grc_agent.api.app:create_app --factory --reload
 ```
 
-```bash
-# macOS / Linux
-GRC_RISK_AGENT=ollama GRC_RAG_ENABLED=true uvicorn grc_agent.api.app:create_app --factory --reload
-```
-
-Then open [http://127.0.0.1:8000/docs](http://127.0.0.1:8000/docs).
-
-## How to run tests
+### Auth enabled (local JWT)
 
 ```bash
-pytest
+$env:GRC_APP_ENV="development"
+$env:AUTH_ENABLED="true"
+$env:JWT_ALGORITHM="HS256"
+$env:JWT_ISSUER="grc-agent-local"
+$env:JWT_AUDIENCE="grc-agent-api"
+$env:JWT_SECRET="replace-with-a-long-random-local-secret"
+uvicorn grc_agent.api.app:create_app --factory --reload
 ```
 
-Most tests use `MockRiskAgent` and/or a fake embedder. A small number of optional live-Ollama checks skip automatically when Ollama is unreachable.
-
-## Testing
-
-The suite currently includes **341** tests covering:
-
-- RiskEngine matrix and scale validation
-- Orchestrator scoring ownership
-- Ollama agent schema validation (HTTP mocked)
-- RAG chunking, ingest, retrieval wiring, and `top_k` defaults
-- Control catalog parsing and mapping validation rules
-- FastAPI CRUD and `POST /risk-assessments` behavior
-- Offline security abuse cases, authn/authz/tenant isolation, schema migration, fail-safe production auth, and observability/audit checks (`tests/security/`, currently **128** tests)
+### Tests and Bandit
 
 ```bash
 pytest
-pytest tests/security
+pytest tests/security -v --tb=short
+bandit -r src/ -f txt
 ```
 
-## Example scenario and response
+---
 
-Request (mock agent — deterministic, no LLM):
+## Security Engineering Decisions
 
-```bash
-curl -X POST http://127.0.0.1:8000/risk-assessments ^
-  -H "Content-Type: application/json" ^
-  -d "{\"scenario\": \"A public patient portal stores PHI. Patients log in with password only; MFA is off.\"}"
-```
+1. **Deterministic RiskEngine** — scores stay auditable and model-independent.
+2. **Authoritative control catalog** — IDs and names are not LLM memory.
+3. **RAG as advisory context** — retrieval helps prompting; validation still gates mappings.
+4. **Production auth fail-closed** — `assert_auth_configuration` blocks unauthenticated / incomplete production settings at load and `create_app`.
+5. **Server-derived tenant ownership** — never trust body `tenant_id` / `owner_subject`.
+6. **Cross-tenant 404** — reduces resource enumeration versus revealing “forbidden but exists”.
+7. **Metadata-only security logs** — no tokens, secrets, or full prompt/response dumps.
+8. **Non-destructive ownership migration** — existing SQLite rows keep data; defaults `'local'`.
+9. **MockRiskAgent** — deterministic offline CI and demos without Ollama.
+10. **`tests/security/`** — abuse cases isolated from happy-path unit/API tests.
 
-Illustrative response shape (mock agent; fields abbreviated):
+---
 
-```json
-{
-  "scenario": "A public patient portal stores PHI. Patients log in with password only; MFA is off.",
-  "proposal": {
-    "assets": [
-      {
-        "id": "asset-1",
-        "name": "In-scope business application",
-        "criticality": "high"
-      }
-    ],
-    "threats": [
-      {
-        "id": "threat-1",
-        "name": "Unauthorized access",
-        "category": "unauthorized_access",
-        "asset_ids": ["asset-1"]
-      }
-    ],
-    "vulnerabilities": [
-      {
-        "id": "vuln-1",
-        "name": "Insufficient access control",
-        "severity": "high",
-        "asset_ids": ["asset-1"]
-      }
-    ],
-    "risks": [
-      {
-        "id": "risk-1",
-        "title": "Unauthorized access to sensitive information",
-        "likelihood": 4,
-        "impact": 5,
-        "rationale": "Deterministic mock proposal (not an LLM). Scenario excerpt: …",
-        "asset_ids": ["asset-1"],
-        "threat_ids": ["threat-1"],
-        "vulnerability_ids": ["vuln-1"]
-      }
-    ],
-    "selected_control_ids": []
-  },
-  "scored_risks": [
-    {
-      "id": "risk-1",
-      "title": "Unauthorized access to sensitive information",
-      "likelihood": 4,
-      "impact": 5,
-      "risk_score": 20,
-      "risk_rating": "critical",
-      "rationale": "…"
-    }
-  ],
-  "risk_score": 20,
-  "risk_rating": "critical",
-  "rationale": "…",
-  "mapped_controls": []
-}
-```
+## Limitations / Roadmap
 
-With Ollama + RAG enabled, `proposal.selected_control_ids` may include candidate IDs, and `mapped_controls` contains only IDs that pass catalog + retrieval validation (for example `CTRL-CLD-001` with its catalog name).
+**Not implemented** (do not assume these exist):
 
-## Technical design decisions
+- Enterprise OIDC / JWKS / IdP login
+- Refresh-token / session management
+- Persistent vector database
+- Distributed observability (OpenTelemetry, Prometheus, Grafana, log shipping)
+- Cloud posture integrations (AWS/Azure/GCP APIs)
+- Continuous monitoring / alerting
+- Automated remediation or ticketing
+- Multi-framework mapping UI (ISO 27001 / NIST CSF / CIS products)
+- Production deployment architecture (containers/k8s as a shipped product)
+- Web dashboard / PDF reporting
+- Evidence upload / control effectiveness automation
 
-### Why RAG is used
+Possible directions: richer catalogs, proposal evaluation harnesses, optional packaging — **without** moving scoring or catalog authority into the LLM.
 
-Retrieved markdown provides grounded GRC context (access-control guidance and catalog entries) so the LLM can select relevant `CTRL-*` IDs from material that actually exists in the knowledge base, instead of inventing controls from parametric memory alone.
+---
 
-### Why structured Pydantic output is used
+## Interview Talking Points
 
-`RiskProposal` enforces required relationships, scale bounds, and `extra="forbid"` so the API never accepts LLM-supplied `risk_score` / `risk_rating`. Invalid JSON shapes fail validation before scoring.
+- **Why not trust the LLM with risk scoring?** GRC scores must be reproducible; the model proposes likelihood/impact, `RiskEngine` computes `likelihood × impact` and rating bands.
+- **Why RAG?** Ground control selection in ingested catalog/knowledge text instead of parametric hallucination alone; still advisory until validated.
+- **How do you prevent hallucinated controls?** Accept IDs only if present in the catalog **and** retrieved candidates; names always from the catalog.
+- **How do you handle prompt injection?** Treat scenario/LLM/RAG text as untrusted; enforce schemas and mapping gates; reject score fields on requests.
+- **How is tenant isolation enforced?** Principal supplies tenant; repository/service scope lists and reads; cross-tenant → 404; admin is explicit.
+- **How does production fail closed?** `GRC_APP_ENV=production` requires auth + issuer/audience (+ key material); validated for env-loaded **and** manually constructed `Settings`.
+- **How did you test authentication?** Dedicated security tests for missing/malformed tokens, expiry, iss/aud, `alg=none`, forged claims, alg confusion, logging hygiene.
+- **How did you test IDOR?** Tenant A creates; tenant B get/list/modify/nested risks → 404; spoofed ownership fields → 422.
+- **What does observability capture?** Correlation IDs and structured metadata events — not Authorization headers, JWTs, or full prompts/responses.
+- **What would you change for production?** Wire a real OIDC/JWKS IdP, managed secrets, persistent vectors, and shipped telemetry — keep RiskEngine/catalog gates.
+- **Why a mock agent?** Deterministic tests and demos without network/LLM flakiness while preserving the same orchestrator contracts.
+- **Why is this an agent, not a chatbot?** Orchestrated retrieve → propose → validate → score → authorize → audit workflow; the LLM is a component, not the application.
 
-### Why RiskEngine is separate from the LLM
-
-Scoring must be reproducible, auditable, and independent of model drift. The LLM proposes likelihood/impact; Python alone computes score and rating. That boundary is intentional for GRC credibility.
-
-### Why control IDs are validated against the catalog and retrieved candidates
-
-Two gates reduce hallucinated mappings:
-
-1. **Catalog** — ID must exist in `controls.md`
-2. **Retrieved candidates** — ID must appear in the RAG context for this scenario
-
-An ID known to the catalog but not retrieved for the scenario is still rejected.
-
-### Why the LLM is not treated as authoritative for control names
-
-Names and control metadata come from the catalog parser. The API response `mapped_controls[].name` is never taken from free-form LLM text.
-
-## Security considerations
-
-- **LLM output is untrusted.** It is schema-validated and then filtered; it is never the final authority for scores or control names.
-- **Control IDs are validated** against both the catalog and retrieved candidates before appearing in `mapped_controls`.
-- **Secrets must not be committed.** Use `.env` locally; only `.env.example` (non-secret names/values) belongs in Git. This project does not require cloud API keys for its default local path.
-- **Risk scoring is deterministic after the LLM proposal.** Changing the model should not silently redefine the 5×5 matrix.
-- **RAG context is advisory**, not authoritative. Retrieval improves prompting; validation and the RiskEngine still own compliance-critical outputs.
-- **Lightweight security observability** emits structured audit events (correlation / `X-Request-ID`, RAG/LLM/mapping/scoring metadata) without logging secrets, full prompts, full LLM responses, or full scenario text. Auth events include `authentication_failed`, `authentication_succeeded`, and `authorization_denied` (metadata only — no tokens). In-process counters track assessments, RAG retrievals, and rejected control IDs. This is not a full observability stack (no OpenTelemetry/Prometheus/Grafana).
-- **API authz** uses role + tenant boundaries when `AUTH_ENABLED=true`. Development/test may set `AUTH_ENABLED=false`. `GRC_APP_ENV=production` refuses to start unauthenticated.
-
-## Limitations / Future work
-
-**Not implemented yet** (do not assume these exist):
-
-- Automated control effectiveness testing
-- Evidence collection / document upload analysis
-- Live cloud security posture checks (AWS/Azure/GCP APIs)
-- Continuous monitoring or alerting pipelines
-- Automated remediation / ticket creation
-- Production-grade observability backends (distributed tracing, Prometheus/Grafana, log shipping)
-- Multi-framework mapping UI (ISO 27001 / NIST CSF / CIS as first-class products)
-- Full OIDC identity provider integration (login UI, JWKS polling, refresh tokens)
-- Persistent vector database (current store is in-process memory)
-- Web dashboard / report PDF generation
-
-Possible roadmap directions: richer catalogs, evaluation harnesses for Ollama proposals, optional Docker packaging, and stronger retrieval quality for control selection — without moving scoring or catalog authority into the LLM.
-
-## Requirements
-
-- Python 3.11+
-- Optional: Ollama + `llama3.1:8b` + `nomic-embed-text`
+---
 
 ## License
 
