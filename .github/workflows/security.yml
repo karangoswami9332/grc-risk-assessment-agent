@@ -1,0 +1,89 @@
+# Continuous security and regression validation for the GRC Risk Assessment Agent.
+# Offline-capable: uses MockRiskAgent; no Ollama, cloud credentials, or API keys required.
+
+name: Security CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+    branches: [main]
+
+# Least privilege: this workflow only needs to read the repository contents.
+permissions:
+  contents: read
+
+concurrency:
+  group: security-ci-${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  security-ci:
+    name: Tests, Bandit, and dependency audit
+    runs-on: ubuntu-latest
+
+    env:
+      # Safe, non-secret CI configuration (offline mock path).
+      GRC_APP_ENV: test
+      AUTH_ENABLED: "false"
+      GRC_RISK_AGENT: mock
+      GRC_RAG_ENABLED: "false"
+      PIP_DISABLE_PIP_VERSION_CHECK: "1"
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+          cache: pip
+
+      - name: Upgrade pip
+        run: python -m pip install --upgrade "pip>=25.3"
+
+      - name: Install project and development dependencies
+        run: python -m pip install -e ".[dev]"
+
+      - name: Full pytest suite
+        run: python -m pytest
+
+      - name: Security test suite
+        run: python -m pytest tests/security -v --tb=short
+
+      - name: Bandit static analysis
+        run: bandit -r src/ -f txt
+
+      - name: pip-audit application dependencies
+        run: |
+          python - <<'PY'
+          from pathlib import Path
+          import tomllib
+
+          data = tomllib.loads(Path("pyproject.toml").read_text(encoding="utf-8"))
+          deps = data["project"]["dependencies"]
+          out = Path("ci-app-requirements.txt")
+          out.write_text("\n".join(deps) + "\n", encoding="utf-8")
+          print(f"Wrote {out} with {len(deps)} application dependency lines:")
+          for line in deps:
+              print(f"  {line}")
+          PY
+          python -m pip_audit -r ci-app-requirements.txt --progress-spinner off
+
+      - name: Repository hygiene
+        run: |
+          set -euo pipefail
+          # Fail on unresolved merge conflict markers in project sources.
+          if git grep -nE '^(<<<<<<< |>>>>>>> )' -- src tests pyproject.toml .github README.md; then
+            echo "Conflict markers found in tracked files." >&2
+            exit 1
+          fi
+          # Trailing whitespace / conflict markers on the pushed/PR commit range.
+          if git rev-parse --verify HEAD^ >/dev/null 2>&1; then
+            git diff --check HEAD^..HEAD
+          else
+            echo "Single-commit history; skipping ranged git diff --check."
+          fi

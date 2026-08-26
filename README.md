@@ -2,6 +2,7 @@
 
 [![Python 3.11+](https://img.shields.io/badge/python-3.11%2B-blue.svg)](https://www.python.org/downloads/)
 [![FastAPI](https://img.shields.io/badge/API-FastAPI-009688.svg)](https://fastapi.tiangolo.com/)
+[![Security CI](https://github.com/karangoswami9332/grc-risk-assessment-agent/actions/workflows/security.yml/badge.svg)](https://github.com/karangoswami9332/grc-risk-assessment-agent/actions/workflows/security.yml)
 [![Tests](https://img.shields.io/badge/tests-345%20passing-brightgreen.svg)](#security-testing)
 [![License: MIT](https://img.shields.io/badge/license-MIT-yellow.svg)](LICENSE)
 
@@ -229,6 +230,18 @@ Fresh DBs get `tenant_id` / `owner_subject` via `create_all`. Existing pre-auth 
 | Secret leakage | Token in logs/errors | Audit filtering + generic 401/403 bodies |
 
 ---
+
+## Continuous Security Validation
+
+GitHub Actions (`.github/workflows/security.yml`) runs automatically on pushes and pull requests to `main`:
+
+- full `pytest` regression suite (offline mock agent — no Ollama required)
+- dedicated `tests/security` suite (authn/authz, tenant isolation, prompt injection, control validation, audit hygiene, …)
+- Bandit static analysis on `src/`
+- `pip-audit` against **application** dependencies declared in `pyproject.toml` (not the entire global environment)
+- basic repository hygiene (conflict markers / `git diff --check` on the commit range)
+
+CI uses `permissions: contents: read` only. It does not require cloud credentials, API keys, or JWT secrets.
 
 ## Security Testing
 
